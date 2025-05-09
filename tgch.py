@@ -348,18 +348,6 @@ async def check_upcoming_expirations(context: ContextTypes.DEFAULT_TYPE):
 
 
 
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-def run_flask():
-    port = int(os.environ.get('PORT', 8080)) 
-    app.run(host='0.0.0.0', port=port)
-
-
-
 def main() -> None:
     if 'RENDER' in os.environ:
         run_flask()
@@ -386,6 +374,20 @@ def main() -> None:
         logger.error("Не удалось инициализировать job queue")
     
     app.run_polling()
+
+
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run_flask():
+    port = int(os.environ.get('PORT', 8080)) 
+    app.run(host='0.0.0.0', port=port)
+
+
 
 if __name__ == '__main__':
     main()

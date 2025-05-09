@@ -11,10 +11,10 @@ from threading import Thread
 import os
 
 # Настройки бота
-TOKEN = BOT_TOKEN
-ADMIN_ID = AD_ID
-CHANNEL_ID = CHEN_ID
-PROVIDER_TOKEN = PROVIDE_TOKEN
+TOKEN = os.getenv('BOT_TOKEN')
+ADMIN_ID = int(os.getenv('AD_ID'))  
+CHANNEL_ID = int(os.getenv('CHEN_ID'))  
+PROVIDER_TOKEN = os.getenv('PROVIDE_TOKEN')
 
 # Тарифы (в копейках)
 TARIFFS = {

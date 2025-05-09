@@ -15,7 +15,7 @@ TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('AD_ID'))  
 CHANNEL_ID = int(os.getenv('CHEN_ID'))  
 PROVIDER_TOKEN = os.getenv('PROVIDE_TOKEN')
-PORT = 8080
+PORT = os.getenv('PRT')
 
 # Тарифы (в копейках)
 TARIFFS = {

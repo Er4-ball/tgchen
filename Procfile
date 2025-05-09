@@ -1,1 +1,1 @@
-worker: python tgch.py
+web: python tgch.py

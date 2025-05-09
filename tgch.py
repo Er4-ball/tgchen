@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, time
 from flask import Flask
 from threading import Thread
 import os
+from dotenv import load_dotenv
 
 # Настройки бота
 TOKEN = os.getenv('BOT_TOKEN')
@@ -16,6 +17,7 @@ ADMIN_ID = int(os.getenv('AD_ID'))
 CHANNEL_ID = int(os.getenv('CHEN_ID'))  
 PROVIDER_TOKEN = os.getenv('PROVIDE_TOKEN')
 PORT = os.getenv('PRT')
+
 
 # Тарифы (в копейках)
 TARIFFS = {

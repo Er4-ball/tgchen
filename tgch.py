@@ -1,3 +1,4 @@
+import os
 import logging
 import sqlite3
 import asyncio
@@ -6,26 +7,13 @@ from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardM
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters, PreCheckoutQueryHandler
 from pathlib import Path
 from datetime import datetime, timedelta, time
-from flask import Flask
-from threading import Thread
-import os
-from dotenv import load_dotenv
+from flask import Flask, request, jsonify
 
-# Загрузка переменных окружения
-load_dotenv()
-
-# Проверка и загрузка обязательных переменных
-def get_env_var(name: str, required: bool = True, default=None):
-    value = os.getenv(name, default)
-    if required and value is None:
-        raise ValueError(f"Необходимо указать переменную окружения: {name}")
-    return value
-
-TOKEN = get_env_var('BOT_TOKEN')
-ADMIN_ID = int(get_env_var('AD_ID'))
-CHANNEL_ID = int(get_env_var('CHEN_ID'))
-PROVIDER_TOKEN = get_env_var('PROVIDE_TOKEN')
-PORT = int(get_env_var('PORT', required=False, default=8080))
+# Настройки бота из переменных окружения
+TOKEN = os.getenv('TELEGRAM_TOKEN')
+ADMIN_ID = int(os.getenv('ADMIN_ID'))
+CHANNEL_ID = int(os.getenv('CHANNEL_ID'))
+PROVIDER_TOKEN = os.getenv('PROVIDER_TOKEN')
 
 # Тарифы (в копейках)
 TARIFFS = {
@@ -42,6 +30,9 @@ logger = logging.getLogger(__name__)
 # Путь к базе данных
 DATA_DIR = Path(__file__).parent
 DATABASE_NAME = DATA_DIR / "subscribers.db"
+
+# Инициализация Flask приложения для веб-сервера
+app = Flask(__name__)
 
 def init_db():
     """Инициализация базы данных"""
@@ -128,7 +119,7 @@ def get_subscriber_info(user_id: int) -> dict:
         }
     return None
 
-# Инициализация базы данных
+# Инициализируем базу данных при запуске
 init_db()
 
 def get_main_keyboard():
@@ -232,12 +223,14 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     days = TARIFFS[tariff]['days']
     
     try:
+        # Создаем постоянную ссылку (без ограничения по времени)
         invite_link = await context.bot.create_chat_invite_link(
             chat_id=CHANNEL_ID,
-            member_limit=1,
-            name=f"sub_{user.id}"
+            member_limit=1,  # Одноразовая ссылка
+            name=f"sub_{user.id}"  # Уникальное имя для ссылки
         )
         
+        # Добавляем подписчика в базу с ссылкой
         add_subscriber(
             user_id=user.id,
             username=user.username,
@@ -246,15 +239,16 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             invite_link=invite_link.invite_link
         )
         
-        await update.message.reply_text(
+        # Отправляем ссылку пользователю
+        message = await update.message.reply_text(
             f"🎉 Оплата принята! Ваша ссылка для вступления в канал:\n"
             f"{invite_link.invite_link}\n\n"
             f"⚠️ Внимание:\n"
             f"1. Ссылка одноразовая\n"
             f"2. Срок действия: {days} дней\n"
             f"3. Не передавайте ссылку другим\n"
-            f"4. Не выходите из канала, тогда придется покупать доступ заново!\n"
-            f"5. Не обновляйте меню пока не перейдете, ссылка пропадет!",
+            f"4. Не выходите из канала, тогда придется покупать доступ заново !\n"
+            f"5. Не обновляйте меню пока не перейдете, ссылка пропадет !",
             reply_markup=get_main_keyboard()
         )
         
@@ -269,7 +263,7 @@ async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Отслеживает новых участников канала"""
     if update.message.chat.id == CHANNEL_ID:
         for user in update.message.new_chat_members:
-            if user.id != context.bot.id:
+            if user.id != context.bot.id:  # Игнорируем самого бота
                 if check_subscription(user.id):
                     try:
                         await context.bot.send_message(
@@ -300,7 +294,6 @@ async def check_expired_subscriptions(context: ContextTypes.DEFAULT_TYPE):
                 chat_id=CHANNEL_ID,
                 user_id=user_id,
                 until_date=int((datetime.now() + timedelta(days=365)).timestamp())
-            )
             
             try:
                 await context.bot.send_message(
@@ -348,52 +341,55 @@ async def check_upcoming_expirations(context: ContextTypes.DEFAULT_TYPE):
     
     conn.close()
 
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-def run_flask():
-    port = int(os.environ.get('PORT', 8080)) 
-    app.run(host='0.0.0.0', port=port)
-
-async def run_bot():
-    """Асинхронный запуск бота"""
+def setup_bot():
+    """Настройка и запуск бота"""
     bot_app = Application.builder().token(TOKEN).build()
+    logger.info(f"Инициализация базы данных по пути: {DATABASE_NAME}")
+    init_db()
     
-    # Регистрация обработчиков
+    # Добавляем обработчики
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CallbackQueryHandler(button_handler))
     bot_app.add_handler(PreCheckoutQueryHandler(precheckout))
     bot_app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     bot_app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.StatusUpdate.NEW_CHAT_MEMBERS, track_new_members))
     
-    # Планировщик задач
+    # Добавляем периодические задачи
     job_queue = bot_app.job_queue
     if job_queue:
         job_queue.run_repeating(check_expired_subscriptions, interval=21600, first=10)
         job_queue.run_daily(check_upcoming_expirations, time=time(hour=12, minute=0))
+    else:
+        logger.error("Не удалось инициализировать job queue")
     
-    await bot_app.run_polling()
+    return bot_app
 
-def main():
-    """Главная функция запуска"""
-    try:
-        # Запускаем Flask в отдельном потоке
-        flask_thread = Thread(target=run_flask, daemon=True)
-        flask_thread.start()
-        
-        # Запускаем бота в основном потоке
-        loop = asyncio.get_event_loop()
-        loop.create_task(run_bot())
-        
-        # Запускаем цикл событий
-        loop.run_forever()
-        
-    except Exception as e:
-        logger.error(f"Ошибка при запуске: {e}")
-        raise
+# Flask роуты для веб-сервера
+@app.route('/')
+def home():
+    return "Telegram Bot is running!"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    # Здесь можно добавить обработку вебхуков если нужно
+    return jsonify({"status": "ok"})
+
+async def run_bot():
+    """Запуск бота в асинхронном режиме"""
+    bot_app = setup_bot()
+    await bot_app.initialize()
+    await bot_app.start()
+    await bot_app.updater.start_polling()
+
+def run():
+    """Основная функция запуска"""
+    # Запускаем бота в отдельном потоке
+    from threading import Thread
+    bot_thread = Thread(target=asyncio.run, args=(run_bot(),))
+    bot_thread.start()
+    
+    # Запускаем Flask сервер
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
 
 if __name__ == '__main__':
-    main()
+    run()

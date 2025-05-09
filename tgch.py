@@ -24,14 +24,17 @@ TARIFFS = {
 }
 
 # Логирование
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 # Путь к базе данных
 DATA_DIR = Path(__file__).parent
 DATABASE_NAME = DATA_DIR / "subscribers.db"
 
-# Инициализация Flask приложения для веб-сервера
+# Инициализация Flask приложения
 app = Flask(__name__)
 
 def init_db():
@@ -223,14 +226,14 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     days = TARIFFS[tariff]['days']
     
     try:
-        # Создаем постоянную ссылку (без ограничения по времени)
+        # Создаем постоянную ссылку
         invite_link = await context.bot.create_chat_invite_link(
             chat_id=CHANNEL_ID,
-            member_limit=1,  # Одноразовая ссылка
-            name=f"sub_{user.id}"  # Уникальное имя для ссылки
+            member_limit=1,
+            name=f"sub_{user.id}"
         )
         
-        # Добавляем подписчика в базу с ссылкой
+        # Добавляем подписчика в базу
         add_subscriber(
             user_id=user.id,
             username=user.username,
@@ -240,15 +243,15 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         
         # Отправляем ссылку пользователю
-        message = await update.message.reply_text(
+        await update.message.reply_text(
             f"🎉 Оплата принята! Ваша ссылка для вступления в канал:\n"
             f"{invite_link.invite_link}\n\n"
             f"⚠️ Внимание:\n"
             f"1. Ссылка одноразовая\n"
             f"2. Срок действия: {days} дней\n"
             f"3. Не передавайте ссылку другим\n"
-            f"4. Не выходите из канала, тогда придется покупать доступ заново !\n"
-            f"5. Не обновляйте меню пока не перейдете, ссылка пропадет !",
+            f"4. Не выходите из канала, иначе придется покупать доступ заново!\n"
+            f"5. Не обновляйте меню пока не перейдете, ссылка пропадет!",
             reply_markup=get_main_keyboard()
         )
         
@@ -263,7 +266,7 @@ async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Отслеживает новых участников канала"""
     if update.message.chat.id == CHANNEL_ID:
         for user in update.message.new_chat_members:
-            if user.id != context.bot.id:  # Игнорируем самого бота
+            if user.id != context.bot.id:
                 if check_subscription(user.id):
                     try:
                         await context.bot.send_message(
@@ -344,9 +347,8 @@ async def check_upcoming_expirations(context: ContextTypes.DEFAULT_TYPE):
 
 def setup_bot():
     """Настройка и запуск бота"""
-    bot_app = Application.builder().token(TOKEN).build()
-    logger.info(f"Инициализация базы данных по пути: {DATABASE_NAME}")
-    init_db()
+    # Указываем persistence=None для избежания предупреждений
+    bot_app = Application.builder().token(TOKEN).post_init(post_init).build()
     
     # Добавляем обработчики
     bot_app.add_handler(CommandHandler("start", start))
@@ -355,42 +357,54 @@ def setup_bot():
     bot_app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     bot_app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.StatusUpdate.NEW_CHAT_MEMBERS, track_new_members))
     
-    # Добавляем периодические задачи
-    job_queue = bot_app.job_queue
-    if job_queue:
-        job_queue.run_repeating(check_expired_subscriptions, interval=21600, first=10)
-        job_queue.run_daily(check_upcoming_expirations, time=time(hour=12, minute=0))
-    else:
-        logger.error("Не удалось инициализировать job queue")
-    
     return bot_app
 
-# Flask роуты для веб-сервера
+async def post_init(application: Application):
+    """Функция для инициализации JobQueue после запуска"""
+    if application.job_queue:
+        # Запускаем проверку истекших подписок каждые 6 часов
+        application.job_queue.run_repeating(
+            check_expired_subscriptions,
+            interval=21600,
+            first=10
+        )
+        
+        # Ежедневная проверка подписок, которые скоро истекают
+        application.job_queue.run_daily(
+            check_upcoming_expirations,
+            time=time(hour=12, minute=0)
+        )
+    else:
+        logger.warning("JobQueue не доступен. Периодические задачи не будут выполняться.")
+
+# Flask роуты
 @app.route('/')
 def home():
     return "Telegram Bot is running!"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    # Здесь можно добавить обработку вебхуков если нужно
     return jsonify({"status": "ok"})
 
 async def run_bot():
-    """Запуск бота в асинхронном режиме"""
+    """Запуск бота"""
     bot_app = setup_bot()
     await bot_app.initialize()
     await bot_app.start()
     await bot_app.updater.start_polling()
+    logger.info("Бот запущен и работает")
 
 def run():
     """Основная функция запуска"""
     # Запускаем бота в отдельном потоке
     from threading import Thread
     bot_thread = Thread(target=asyncio.run, args=(run_bot(),))
+    bot_thread.daemon = True
     bot_thread.start()
     
     # Запускаем Flask сервер
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
 
 if __name__ == '__main__':
     run()

@@ -15,6 +15,7 @@ TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('AD_ID'))  
 CHANNEL_ID = int(os.getenv('CHEN_ID'))  
 PROVIDER_TOKEN = os.getenv('PROVIDE_TOKEN')
+PORT = 8080
 
 # Тарифы (в копейках)
 TARIFFS = {
@@ -354,8 +355,8 @@ def home():
     return "Bot is running!"
 
 def run_flask():
-    app.run(host='0.0.0.0', port=8080)
-
+    port = int(os.environ.get('PORT', 8080)) 
+    app.run(host='0.0.0.0', port=port)
 
 
 

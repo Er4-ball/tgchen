@@ -1,23 +1,19 @@
+import os
 import logging
 import sqlite3
 import asyncio
-from datetime import datetime, timedelta, time
-from os import getenv
+from datetime import datetime, timedelta
+from flask import Flask, request
+from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardMarkup, ChatInviteLink
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters, PreCheckoutQueryHandler
 from pathlib import Path
-from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters, PreCheckoutQueryHandler, JobQueue
+from datetime import datetime, timedelta, time
 
-# Настройки логирования
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Переменные окружения
-TOKEN = getenv('TOKEN_LOGIN')
-ADMIN_ID = int(getenv('ADMIN_ID'))
-CHANNEL_ID = int(getenv('CHANNEL_ID'))
-PROVIDER_TOKEN = getenv('PROVIDER_TOKEN')
-
-
+# Настройки бота
+TOKEN = os.getenv('TOKEN')
+ADMIN_ID = int(os.getenv('ADMIN_ID'))
+CHANNEL_ID = int(os.getenv('CHANNEL_ID'))
+PROVIDER_TOKEN = os.getenv('PROVIDER_TOKEN')
 
 # Тарифы (в копейках)
 TARIFFS = {
@@ -27,9 +23,13 @@ TARIFFS = {
     '1_year': {'price': 299900, 'days': 365, 'label': '1 год - 2999₽'}
 }
 
+# Логирование
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Путь к базе данных
 DATA_DIR = Path(__file__).parent
-DATABASE_NAME = DATA_DIR / "subscribers.db"
+DATABASE_NAME = DATA_DIR / "subscriber.db"
 
 def init_db():
     """Инициализация базы данных"""
@@ -38,7 +38,7 @@ def init_db():
         cursor = conn.cursor()
         
         cursor.execute("""
-        CREATE TABLE IF NOT EXISTS subscribers (
+        CREATE TABLE IF NOT EXISTS subscriber (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             full_name TEXT,
@@ -51,7 +51,7 @@ def init_db():
         
         cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_subscription_end 
-        ON subscribers(subscription_end)
+        ON subscriber(subscription_end)
         """)
         
         conn.commit()
@@ -66,11 +66,11 @@ def add_subscriber(user_id: int, username: str, full_name: str, tariff: str, inv
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
     
-    days = TARIFFS[tariff]['days']
-    subscription_end = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+    day = TARIFFS[tariff]['days']
+    subscription_end = (datetime.now() + timedelta(days=day)).strftime('%Y-%m-%d %H:%M:%S')
     
     cursor.execute("""
-    INSERT OR REPLACE INTO subscribers (user_id, username, full_name, subscription_end, tariff, invite_link)
+    INSERT OR REPLACE INTO subscriber (user_id, username, full_name, subscription_end, tariff, invite_link)
     VALUES (?, ?, ?, ?, ?, ?)
     """, (user_id, username, full_name, subscription_end, tariff, invite_link))
     
@@ -84,7 +84,7 @@ def check_subscription(user_id: int) -> bool:
     
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     cursor.execute("""
-    SELECT subscription_end FROM subscribers 
+    SELECT subscription_end FROM subscriber 
     WHERE user_id = ? AND subscription_end > ?
     """, (user_id, current_time))
     
@@ -99,7 +99,7 @@ def get_subscriber_info(user_id: int) -> dict:
     cursor = conn.cursor()
     
     cursor.execute("""
-    SELECT username, full_name, subscription_end, tariff, invite_link FROM subscribers 
+    SELECT username, full_name, subscription_end, tariff, invite_link FROM subscriber 
     WHERE user_id = ?
     """, (user_id,))
     
@@ -129,7 +129,7 @@ def get_main_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def get_tariffs_keyboard():
+def get_tariff_keyboard():
     """Клавиатура с выбором тарифа"""
     keyboard = [
         [InlineKeyboardButton(TARIFFS['1_month']['label'], callback_data='tariff_1_month')],
@@ -155,7 +155,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if query.data == 'choose_tariff':
         await query.edit_message_text(
             "Выберите тариф подписки:",
-            reply_markup=get_tariffs_keyboard()
+            reply_markup=get_tariff_keyboard()
         )
     elif query.data == 'back':
         await query.edit_message_text(
@@ -194,21 +194,16 @@ async def send_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE, tarif
     query = update.callback_query
     tariff_info = TARIFFS[tariff]
     
-    if PROVIDER_TOKEN == "fake_provider_token":
-        # Фейковая оплата
-        await successful_payment(update, context, tariff)
-    else:
-        # Реальная оплата
-        await context.bot.send_invoice(
-            chat_id=query.message.chat_id,
-            title=f"Подписка на {tariff_info['label'].split(' - ')[0]}",
-            description=f"Доступ к каналу на {tariff_info['label']}",
-            payload=f"subscription_{tariff}",
-            provider_token=PROVIDER_TOKEN,
-            currency="RUB",
-            prices=[LabeledPrice(tariff_info['label'], tariff_info['price'])],
-            need_email=True
-        )
+    await context.bot.send_invoice(
+        chat_id=query.message.chat_id,
+        title=f"Подписка на {tariff_info['label'].split(' - ')[0]}",
+        description=f"Доступ к каналу на {tariff_info['label']}",
+        payload=f"subscription_{tariff}",
+        provider_token=PROVIDER_TOKEN,
+        currency="RUB",
+        prices=[LabeledPrice(tariff_info['label'], tariff_info['price'])],
+        need_email=True
+    )
 
 async def precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Проверка платежа"""
@@ -218,21 +213,19 @@ async def precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     else:
         await query.answer(ok=False, error_message="Ошибка оплаты")
 
-async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, tariff: str = None):
+async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка успешной оплаты"""
     user = update.effective_user
-    tariff = tariff or update.message.successful_payment.invoice_payload.replace('subscription_', '')
+    tariff = update.message.successful_payment.invoice_payload.replace('subscription_', '')
     days = TARIFFS[tariff]['days']
     
     try:
-        # Создаем постоянную ссылку (без ограничения по времени)
         invite_link = await context.bot.create_chat_invite_link(
             chat_id=CHANNEL_ID,
-            member_limit=1,  # Одноразовая ссылка
-            name=f"sub_{user.id}"  # Уникальное имя для ссылки
+            member_limit=1,
+            name=f"sub_{user.id}"
         )
         
-        # Добавляем подписчика в базу с ссылкой
         add_subscriber(
             user_id=user.id,
             username=user.username,
@@ -241,7 +234,6 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE,
             invite_link=invite_link.invite_link
         )
         
-        # Отправляем ссылку пользователю
         message = await update.message.reply_text(
             f"🎉 Оплата принята! Ваша ссылка для вступления в канал:\n"
             f"{invite_link.invite_link}\n\n"
@@ -249,8 +241,8 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE,
             f"1. Ссылка одноразовая\n"
             f"2. Срок действия: {days} дней\n"
             f"3. Не передавайте ссылку другим\n"
-            f"4. Не выходите из канала, тогда придется покупать доступ заново !\n"
-            f"5. Не обновляйте меню пока не перейдете, ссылка пропадет !",
+            f"4. Не выходите из канала, иначе придется покупать доступ заново!\n"
+            f"5. Не обновляйте меню, пока не перейдете по ссылке!",
             reply_markup=get_main_keyboard()
         )
         
@@ -261,15 +253,13 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE,
             reply_markup=get_main_keyboard()
         )
 
-async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def track_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отслеживает новых участников канала"""
     if update.message.chat.id == CHANNEL_ID:
         for user in update.message.new_chat_members:
-            if user.id != context.bot.id:  # Игнорируем самого бота
-                # Проверяем, есть ли пользователь в базе
+            if user.id != context.bot.id:
                 if check_subscription(user.id):
                     try:
-                        # Отправляем подтверждение
                         await context.bot.send_message(
                             chat_id=user.id,
                             text="✅ Вы успешно вступили в канал!",
@@ -278,20 +268,20 @@ async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     except Exception as e:
                         logger.error(f"Ошибка отправки подтверждения: {e}")
 
-async def check_expired_subscriptions(context: ContextTypes.DEFAULT_TYPE):
+async def check_expired_subscription(context: ContextTypes.DEFAULT_TYPE):
     """Проверяет истекшие подписки"""
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
     
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     cursor.execute("""
-    SELECT user_id FROM subscribers 
+    SELECT user_id FROM subscriber 
     WHERE subscription_end <= ?
     """, (current_time,))
     
-    expired_users = cursor.fetchall()
+    expired_user = cursor.fetchall()
     
-    for user in expired_users:
+    for user in expired_user:
         user_id, username = user
         try:
             await context.bot.ban_chat_member(
@@ -310,7 +300,7 @@ async def check_expired_subscriptions(context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
                 
-            cursor.execute("DELETE FROM subscribers WHERE user_id = ?", (user_id,))
+            cursor.execute("DELETE FROM subscriber WHERE user_id = ?", (user_id,))
             
         except Exception as e:
             logger.error(f"Ошибка при удалении пользователя {user_id} из канала: {e}")
@@ -318,19 +308,19 @@ async def check_expired_subscriptions(context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
 
-async def check_upcoming_expirations(context: ContextTypes.DEFAULT_TYPE):
+async def check_upcoming_expiration(context: ContextTypes.DEFAULT_TYPE):
     """Проверяет подписки, которые истекают через 1 день"""
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
     
     cursor.execute("""
-    SELECT user_id, subscription_end FROM subscribers 
+    SELECT user_id, subscription_end FROM subscriber 
     WHERE subscription_end BETWEEN datetime('now') AND datetime('now', '+1 day')
     """)
     
-    expiring_users = cursor.fetchall()
+    expiring_user = cursor.fetchall()
     
-    for user in expiring_users:
+    for user in expiring_user:
         user_id = user[0]
         expiration_date = datetime.fromisoformat(user[1]).strftime('%Y-%m-%d')
         
@@ -351,18 +341,16 @@ def main() -> None:
     logger.info(f"Инициализация базы данных по пути: {DATABASE_NAME}")
     init_db()
     
-    # Добавляем обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(PreCheckoutQueryHandler(precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
-    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.StatusUpdate.NEW_CHAT_MEMBERS, track_new_members))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.StatusUpdate.NEW_CHAT_MEMBERS, track_new_member))
     
-    # Добавляем периодические задачи
     job_queue = app.job_queue
     if job_queue:
-        job_queue.run_repeating(check_expired_subscriptions, interval=21600, first=10)
-        job_queue.run_daily(check_upcoming_expirations, time=time(hour=12, minute=0))
+        job_queue.run_repeat(check_expired_subscription, interval=21600, first=10)
+        job_queue.run_daily(check_upcoming_expiration, time=time(hour=12, minute=0))
     else:
         logger.error("Не удалось инициализировать job queue")
     
@@ -370,3 +358,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+

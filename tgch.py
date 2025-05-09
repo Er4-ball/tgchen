@@ -8,6 +8,7 @@ from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardM
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters, PreCheckoutQueryHandler
 from pathlib import Path
 from datetime import datetime, timedelta, time
+from threading import Thread
 
 # Настройки бота
 TOKEN = os.getenv('TOKEN')
@@ -60,6 +61,13 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_subscription_end 
         ON subscriber(subscription_end)
         """)
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"База данных создана: {DATABASE_NAME}")
+    except Exception as e:
+        logger.error(f"Ошибка при создании базы: {e}")
+        raise
         
         conn.commit()
         conn.close()
@@ -349,7 +357,7 @@ def run_flask():
 
 def main() -> None:
     """Основная функция запуска"""
-    # Инициализируем бота с JobQueue
+    # Инициализируем бота с явным указанием использования JobQueue
     app = Application.builder().token(TOKEN).build()
     
     # Добавляем обработчики
@@ -359,19 +367,22 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.StatusUpdate.NEW_CHAT_MEMBERS, track_new_member))
     
-    # Настраиваем JobQueue
-    if hasattr(app, 'job_queue'):
-        app.job_queue.run_repeating(check_expired_subscription, interval=21600, first=10)
-        app.job_queue.run_daily(check_upcoming_expiration, time=time(hour=12, minute=0))
-    else:
-        logger.warning("JobQueue не доступен. Периодические задачи не будут выполняться.")
+    # Настраиваем JobQueue с проверкой его доступности
+    try:
+        if app.job_queue:
+            app.job_queue.run_repeating(check_expired_subscription, interval=21600, first=10)
+            app.job_queue.run_daily(check_upcoming_expiration, time=time(hour=12, minute=0))
+        else:
+            logger.warning("JobQueue не доступен. Периодические задачи не будут выполняться.")
+    except Exception as e:
+        logger.error(f"Ошибка при настройке JobQueue: {e}")
     
-    # Запускаем Flask в основном потоке
-    from threading import Thread
+    # Запускаем Flask в отдельном потоке
     Thread(target=run_flask).start()
     
     # Запускаем бота в текущем потоке
     app.run_polling()
 
 if __name__ == '__main__':
+    init_db()  # Инициализируем базу данных перед запуском
     main()

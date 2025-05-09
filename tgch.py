@@ -385,7 +385,11 @@ def main():
         flask_thread.start()
         
         # Запускаем бота в основном потоке
-        asyncio.run(run_bot())
+        loop = asyncio.get_event_loop()
+        loop.create_task(run_bot())
+        
+        # Запускаем цикл событий
+        loop.run_forever()
         
     except Exception as e:
         logger.error(f"Ошибка при запуске: {e}")

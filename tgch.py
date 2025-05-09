@@ -295,7 +295,7 @@ async def check_expired_subscription(context: ContextTypes.DEFAULT_TYPE):
                 chat_id=CHANNEL_ID,
                 user_id=user_id,
                 until_date=int((datetime.now() + timedelta(days=365)).timestamp())
-            
+            )
             try:
                 await context.bot.send_message(
                     chat_id=user_id,

@@ -8,6 +8,14 @@ from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardM
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters, PreCheckoutQueryHandler
 from pathlib import Path
 from datetime import datetime, timedelta, time
+from flask import Flask
+
+appp = Flask(__name__)
+
+# Роут для проверки работы сервера
+@appp.route('/')
+def index():
+    return "Flask сервер работает!"
 
 # Настройки бота
 TOKEN = os.getenv('TOKEN')
@@ -357,4 +365,5 @@ def main() -> None:
     app.run_polling()
 
 if __name__ == '__main__':
+    appp.run(host='0.0.0.0', port=5000)
     main()

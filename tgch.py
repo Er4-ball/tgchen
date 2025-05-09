@@ -3,12 +3,11 @@ import logging
 import sqlite3
 import asyncio
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify
+from flask import Flask, request
 from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardMarkup, ChatInviteLink
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters, PreCheckoutQueryHandler
 from pathlib import Path
 from datetime import datetime, timedelta, time
-from threading import Thread
 
 # Настройки бота
 TOKEN = os.getenv('TOKEN')
@@ -31,17 +30,6 @@ logger = logging.getLogger(__name__)
 # Путь к базе данных
 DATA_DIR = Path(__file__).parent
 DATABASE_NAME = DATA_DIR / "subscriber.db"
-
-# Инициализация Flask приложения
-flask_app = Flask(__name__)
-
-@flask_app.route('/')
-def home():
-    return "Telegram Bot is running!"
-
-@flask_app.route('/health')
-def health_check():
-    return jsonify({"status": "ok"})
 
 def init_db():
     """Инициализация базы данных"""
@@ -294,7 +282,7 @@ async def check_expired_subscription(context: ContextTypes.DEFAULT_TYPE):
     expired_user = cursor.fetchall()
     
     for user in expired_user:
-        user_id = user[0]
+        user_id, username = user
         try:
             await context.bot.ban_chat_member(
                 chat_id=CHANNEL_ID,
@@ -348,49 +336,25 @@ async def check_upcoming_expiration(context: ContextTypes.DEFAULT_TYPE):
     
     conn.close()
 
-def setup_bot():
-    """Настройка и запуск бота"""
-    # Убедитесь, что установлен python-telegram-bot[job-queue]
-    bot_app = Application.builder().token(TOKEN).build()
+def main() -> None:
+    app = Application.builder().token(TOKEN).build()
+    logger.info(f"Инициализация базы данных по пути: {DATABASE_NAME}")
+    init_db()
     
-    # Добавляем обработчики
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CallbackQueryHandler(button_handler))
-    bot_app.add_handler(PreCheckoutQueryHandler(precheckout))
-    bot_app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
-    bot_app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.StatusUpdate.NEW_CHAT_MEMBERS, track_new_member))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(PreCheckoutQueryHandler(precheckout))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.StatusUpdate.NEW_CHAT_MEMBERS, track_new_member))
     
-    # Настройка JobQueue
-    if hasattr(bot_app, 'job_queue') and bot_app.job_queue:
-        bot_app.job_queue.run_repeating(check_expired_subscription, interval=21600, first=10)
-        bot_app.job_queue.run_daily(check_upcoming_expiration, time=time(hour=12, minute=0))
+    job_queue = app.job_queue
+    if job_queue:
+        job_queue.run_repeat(check_expired_subscription, interval=21600, first=10)
+        job_queue.run_daily(check_upcoming_expiration, time=time(hour=12, minute=0))
     else:
-        logger.warning("JobQueue не доступен. Периодические задачи не будут выполняться.")
+        logger.error("Не удалось инициализировать job queue")
     
-    return bot_app
-
-async def run_bot():
-    """Запуск бота"""
-    bot_app = setup_bot()
-    await bot_app.initialize()
-    await bot_app.start()
-    await bot_app.updater.start_polling()
-    logger.info("Бот запущен и работает")
-
-def run_flask():
-    """Запуск Flask сервера"""
-    port = int(os.getenv('PORT', 5000))
-    flask_app.run(host='0.0.0.0', port=port)
-
-def main():
-    """Основная функция запуска"""
-    # Запускаем бота в отдельном потоке
-    bot_thread = Thread(target=asyncio.run, args=(run_bot(),))
-    bot_thread.daemon = True
-    bot_thread.start()
-    
-    # Запускаем Flask сервер
-    run_flask()
+    app.run_polling()
 
 if __name__ == '__main__':
     main()

@@ -11,13 +11,21 @@ from threading import Thread
 import os
 from dotenv import load_dotenv
 
-# Настройки бота
-TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = int(os.getenv('AD_ID'))  
-CHANNEL_ID = int(os.getenv('CHEN_ID'))  
-PROVIDER_TOKEN = os.getenv('PROVIDE_TOKEN')
-PORT = os.getenv('PRT')
+# Загрузка переменных окружения
+load_dotenv()
 
+# Проверка и загрузка обязательных переменных
+def get_env_var(name: str, required: bool = True, default=None):
+    value = os.getenv(name, default)
+    if required and value is None:
+        raise ValueError(f"Необходимо указать переменную окружения: {name}")
+    return value
+
+TOKEN = get_env_var('BOT_TOKEN')
+ADMIN_ID = int(get_env_var('AD_ID'))
+CHANNEL_ID = int(get_env_var('CHEN_ID'))
+PROVIDER_TOKEN = get_env_var('PROVIDE_TOKEN')
+PORT = int(get_env_var('PORT', required=False, default=8080))
 
 # Тарифы (в копейках)
 TARIFFS = {
@@ -71,7 +79,6 @@ def add_subscriber(user_id: int, username: str, full_name: str, tariff: str, inv
     cursor = conn.cursor()
     
     days = TARIFFS[tariff]['days']
-    # Явное форматирование даты в ISO-формате
     subscription_end = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
     
     cursor.execute("""
@@ -87,7 +94,6 @@ def check_subscription(user_id: int) -> bool:
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
     
-    # Используем явное сравнение с текущей датой в том же формате
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     cursor.execute("""
     SELECT subscription_end FROM subscribers 
@@ -122,7 +128,7 @@ def get_subscriber_info(user_id: int) -> dict:
         }
     return None
 
-# Инициализируем базу данных при запуске
+# Инициализация базы данных
 init_db()
 
 def get_main_keyboard():
@@ -226,14 +232,12 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     days = TARIFFS[tariff]['days']
     
     try:
-        # Создаем постоянную ссылку (без ограничения по времени)
         invite_link = await context.bot.create_chat_invite_link(
             chat_id=CHANNEL_ID,
-            member_limit=1,  # Одноразовая ссылка
-            name=f"sub_{user.id}"  # Уникальное имя для ссылки
+            member_limit=1,
+            name=f"sub_{user.id}"
         )
         
-        # Добавляем подписчика в базу с ссылкой
         add_subscriber(
             user_id=user.id,
             username=user.username,
@@ -242,16 +246,15 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             invite_link=invite_link.invite_link
         )
         
-        # Отправляем ссылку пользователю
-        message = await update.message.reply_text(
+        await update.message.reply_text(
             f"🎉 Оплата принята! Ваша ссылка для вступления в канал:\n"
             f"{invite_link.invite_link}\n\n"
             f"⚠️ Внимание:\n"
             f"1. Ссылка одноразовая\n"
             f"2. Срок действия: {days} дней\n"
             f"3. Не передавайте ссылку другим\n"
-            f"4. Не выходите из канала, тогда придется покупать доступ заново !\n"
-            f"5. Не обновляйте меню пока не перейдете, ссылка пропадет !",
+            f"4. Не выходите из канала, тогда придется покупать доступ заново!\n"
+            f"5. Не обновляйте меню пока не перейдете, ссылка пропадет!",
             reply_markup=get_main_keyboard()
         )
         
@@ -266,11 +269,9 @@ async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Отслеживает новых участников канала"""
     if update.message.chat.id == CHANNEL_ID:
         for user in update.message.new_chat_members:
-            if user.id != context.bot.id:  # Игнорируем самого бота
-                # Проверяем, есть ли пользователь в базе
+            if user.id != context.bot.id:
                 if check_subscription(user.id):
                     try:
-                        # Отправляем подтверждение
                         await context.bot.send_message(
                             chat_id=user.id,
                             text="✅ Вы успешно вступили в канал!",
@@ -293,7 +294,7 @@ async def check_expired_subscriptions(context: ContextTypes.DEFAULT_TYPE):
     expired_users = cursor.fetchall()
     
     for user in expired_users:
-        user_id, username = user
+        user_id = user[0]
         try:
             await context.bot.ban_chat_member(
                 chat_id=CHANNEL_ID,
@@ -347,38 +348,6 @@ async def check_upcoming_expirations(context: ContextTypes.DEFAULT_TYPE):
     
     conn.close()
 
-
-
-
-def main() -> None:
-    if 'RENDER' in os.environ:
-        run_flask()
-    else:
-        flask_thread = Thread(target=run_flask)
-        flask_thread.start()
-    app = Application.builder().token(TOKEN).build()
-    logger.info(f"Инициализация базы данных по пути: {DATABASE_NAME}")
-    init_db()
-    
-    # Добавляем обработчики
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(PreCheckoutQueryHandler(precheckout))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
-    app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.StatusUpdate.NEW_CHAT_MEMBERS, track_new_members))
-    
-    # Добавляем периодические задачи
-    job_queue = app.job_queue
-    if job_queue:
-        job_queue.run_repeating(check_expired_subscriptions, interval=21600, first=10)
-        job_queue.run_daily(check_upcoming_expirations, time=time(hour=12, minute=0))  # Corrected line
-    else:
-        logger.error("Не удалось инициализировать job queue")
-    
-    app.run_polling()
-
-
-
 app = Flask(__name__)
 
 @app.route('/')
@@ -389,7 +358,38 @@ def run_flask():
     port = int(os.environ.get('PORT', 8080)) 
     app.run(host='0.0.0.0', port=port)
 
+async def run_bot():
+    """Асинхронный запуск бота"""
+    bot_app = Application.builder().token(TOKEN).build()
+    
+    # Регистрация обработчиков
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CallbackQueryHandler(button_handler))
+    bot_app.add_handler(PreCheckoutQueryHandler(precheckout))
+    bot_app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    bot_app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.StatusUpdate.NEW_CHAT_MEMBERS, track_new_members))
+    
+    # Планировщик задач
+    job_queue = bot_app.job_queue
+    if job_queue:
+        job_queue.run_repeating(check_expired_subscriptions, interval=21600, first=10)
+        job_queue.run_daily(check_upcoming_expirations, time=time(hour=12, minute=0))
+    
+    await bot_app.run_polling()
 
+def main():
+    """Главная функция запуска"""
+    try:
+        # Запускаем Flask в отдельном потоке
+        flask_thread = Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        
+        # Запускаем бота в основном потоке
+        asyncio.run(run_bot())
+        
+    except Exception as e:
+        logger.error(f"Ошибка при запуске: {e}")
+        raise
 
 if __name__ == '__main__':
     main()

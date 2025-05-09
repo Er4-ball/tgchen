@@ -3,19 +3,11 @@ import logging
 import sqlite3
 import asyncio
 from datetime import datetime, timedelta
-from flask import Flask, request
+from flask import Flask
 from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardMarkup, ChatInviteLink
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters, PreCheckoutQueryHandler
 from pathlib import Path
 from datetime import datetime, timedelta, time
-from flask import Flask
-
-appp = Flask(__name__)
-
-# Роут для проверки работы сервера
-@appp.route('/')
-def index():
-    return "Flask сервер работает!"
 
 # Настройки бота
 TOKEN = os.getenv('TOKEN')
@@ -38,6 +30,13 @@ logger = logging.getLogger(__name__)
 # Путь к базе данных
 DATA_DIR = Path(__file__).parent
 DATABASE_NAME = DATA_DIR / "subscriber.db"
+
+# Создаем Flask приложение
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def home():
+    return "Bot is running"
 
 def init_db():
     """Инициализация базы данных"""
@@ -290,13 +289,12 @@ async def check_expired_subscription(context: ContextTypes.DEFAULT_TYPE):
     expired_user = cursor.fetchall()
     
     for user in expired_user:
-        user_id, username = user
+        user_id = user[0]
         try:
             await context.bot.ban_chat_member(
                 chat_id=CHANNEL_ID,
                 user_id=user_id,
                 until_date=int((datetime.now() + timedelta(days=365)).timestamp())
-            )
             
             try:
                 await context.bot.send_message(
@@ -344,26 +342,36 @@ async def check_upcoming_expiration(context: ContextTypes.DEFAULT_TYPE):
     
     conn.close()
 
+def run_flask():
+    """Запуск Flask сервера"""
+    port = int(os.getenv('PORT', 5000))
+    flask_app.run(host='0.0.0.0', port=port)
+
 def main() -> None:
+    """Основная функция запуска"""
+    # Инициализируем бота с JobQueue
     app = Application.builder().token(TOKEN).build()
-    logger.info(f"Инициализация базы данных по пути: {DATABASE_NAME}")
-    init_db()
     
+    # Добавляем обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(PreCheckoutQueryHandler(precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.StatusUpdate.NEW_CHAT_MEMBERS, track_new_member))
     
-    job_queue = app.job_queue
-    if job_queue:
-        job_queue.run_repeat(check_expired_subscription, interval=21600, first=10)
-        job_queue.run_daily(check_upcoming_expiration, time=time(hour=12, minute=0))
+    # Настраиваем JobQueue
+    if hasattr(app, 'job_queue'):
+        app.job_queue.run_repeating(check_expired_subscription, interval=21600, first=10)
+        app.job_queue.run_daily(check_upcoming_expiration, time=time(hour=12, minute=0))
     else:
-        logger.error("Не удалось инициализировать job queue")
+        logger.warning("JobQueue не доступен. Периодические задачи не будут выполняться.")
     
+    # Запускаем Flask в основном потоке
+    from threading import Thread
+    Thread(target=run_flask).start()
+    
+    # Запускаем бота в текущем потоке
     app.run_polling()
 
 if __name__ == '__main__':
-    appp.run(host='0.0.0.0', port=5000)
     main()
